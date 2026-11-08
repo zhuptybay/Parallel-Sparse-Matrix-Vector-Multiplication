@@ -1,0 +1,254 @@
+﻿#include <cmath>
+#include <omp.h>
+#include <iostream>
+#include <vector>
+#include <algorithm>
+#include <iomanip>
+#include <fstream>
+#include <mpi.h>
+using namespace std;
+
+vector<double> sequentialSpMV(
+    const vector<double>& values,
+    const vector<int>& col_indices,
+    const vector<int>& row_ptr,
+    const vector<double>& x
+) {
+    int rows = row_ptr.size() - 1;
+    vector<double> result(rows, 0.0);
+    for (int i = 0; i < rows; i++) {
+        for (int j = row_ptr[i]; j < row_ptr[i + 1]; j++) {
+            result[i] += values[j] * x[col_indices[j]];
+        }
+    }
+    return result;
+}
+
+vector<double> parallelSpMV(
+    const vector<double>& values,
+    const vector<int>& col_indices,
+    const vector<int>& row_ptr,
+    const vector<double>& x
+) {
+    int rows = row_ptr.size() - 1;
+    vector<double> result(rows, 0.0);
+#pragma omp parallel for
+    for (int i = 0; i < rows; i++) {
+        for (int j = row_ptr[i]; j < row_ptr[i + 1]; j++) {
+            result[i] += values[j] * x[col_indices[j]];
+        }
+    }
+    return result;
+}
+
+void generateSparseMatrix(
+    int rows,
+    int nonZerosPerRow,
+    vector<double>& values,
+    vector<int>& col_indices,
+    vector<int>& row_ptr
+) {
+    row_ptr.push_back(0);
+    for (int i = 0; i < rows; i++) {
+        if (i % 10 == 0) {
+            row_ptr.push_back(static_cast<int>(values.size()));
+            continue;
+        }
+        for (int j = 0; j < nonZerosPerRow; j++) {
+            values.push_back(1.0 + (i + j) % 10);
+            col_indices.push_back((i + j) % rows);
+        }
+        row_ptr.push_back(values.size());
+    }
+}
+
+void runTests() {
+    vector<double> values = { 1, 2, 3, 4, 5, 6, 7 };
+    vector<int> cols = { 0, 3, 0, 1, 1, 2, 3 };
+    vector<int> ptr = { 0, 2, 2, 4, 7 };
+    vector<double> x = { 1, 2, 3, 4 };
+    vector<double> expected = { 9, 0, 11, 56 };
+    auto seq = sequentialSpMV(values, cols, ptr, x);
+    auto par = parallelSpMV(values, cols, ptr, x);
+    cout << "Sequential test: "
+        << (seq == expected ? "PASS" : "FAIL") << endl;
+    cout << "OpenMP test: "
+        << (par == expected ? "PASS" : "FAIL") << endl;
+    vector<double> emptyValues;
+    vector<int> emptyCols;
+    vector<int> emptyPtr = { 0, 0, 0, 0 };
+    vector<double> emptyX = { 1, 2, 3 };
+    vector<double> expectedZeros = { 0, 0, 0 };
+    auto seqZero = sequentialSpMV(
+        emptyValues, emptyCols, emptyPtr, emptyX
+    );
+    auto ompZero = parallelSpMV(
+        emptyValues, emptyCols, emptyPtr, emptyX
+    );
+
+    cout << "Zero matrix test: "
+        << (seqZero == expectedZeros &&
+            ompZero == expectedZeros ? "PASS" : "FAIL")
+        << endl;
+}
+
+int main() {
+    MPI_Init(nullptr, nullptr);
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    const int N = 100000;
+    const int nnzPerRow = 100;
+    vector<double> values;
+    vector<int> col_indices;
+    vector<int> row_ptr;
+    vector<double> x(N, 1.0);
+    if (rank == 0) {
+        generateSparseMatrix(
+            N, nnzPerRow, values, col_indices, row_ptr
+        );
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    double startTime = MPI_Wtime();
+    MPI_Bcast(x.data(), N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    int startRow = rank * N / size;
+    int endRow = (rank + 1) * N / size;
+    int localRows = endRow - startRow;
+    vector<double> localValues;
+    vector<int> localCols;
+    vector<int> localRowPtr(localRows + 1);
+    if (rank == 0) {
+        for (int p = 0; p < size; p++) {
+            int begin = p * N / size;
+            int end = (p + 1) * N / size;
+            int first = row_ptr[begin];
+            int last = row_ptr[end];
+            int count = last - first;
+            vector<int> ptr(end - begin + 1);
+            for (int i = 0; i <= end - begin; i++) {
+                ptr[i] = row_ptr[begin + i] - first;
+            }
+            if (p == 0) {
+                localRowPtr = ptr;
+                localValues.assign(
+                    values.begin() + first,
+                    values.begin() + last
+                );
+                localCols.assign(
+                    col_indices.begin() + first,
+                    col_indices.begin() + last
+                );
+            }
+            else {
+                MPI_Send(&count, 1, MPI_INT, p, 0, MPI_COMM_WORLD);
+                MPI_Send(ptr.data(), static_cast<int>(ptr.size()),
+                    MPI_INT, p, 1, MPI_COMM_WORLD);
+                MPI_Send(values.data() + first, count,
+                    MPI_DOUBLE, p, 2, MPI_COMM_WORLD);
+                MPI_Send(col_indices.data() + first, count,
+                    MPI_INT, p, 3, MPI_COMM_WORLD);
+            }
+        }
+    }
+    else {
+        int count;
+        MPI_Recv(&count, 1, MPI_INT, 0, 0,
+            MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(localRowPtr.data(), localRows + 1,
+            MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        localValues.resize(count);
+        localCols.resize(count);
+        MPI_Recv(localValues.data(), count, MPI_DOUBLE,
+            0, 2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Recv(localCols.data(), count, MPI_INT,
+            0, 3, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
+    vector<double> localResult =
+        sequentialSpMV(localValues, localCols, localRowPtr, x);
+    vector<int> counts(size), displs(size);
+    for (int p = 0; p < size; p++) {
+        int begin = p * N / size;
+        int end = (p + 1) * N / size;
+        counts[p] = end - begin;
+        displs[p] = begin;
+    }
+    vector<double> globalResult;
+    if (rank == 0) globalResult.resize(N);
+    MPI_Gatherv(
+        localResult.data(), localRows, MPI_DOUBLE,
+        rank == 0 ? globalResult.data() : nullptr,
+        counts.data(), displs.data(), MPI_DOUBLE,
+        0, MPI_COMM_WORLD
+    );
+    double localTime = MPI_Wtime() - startTime;
+    double mpiTime = 0.0;
+    MPI_Reduce(
+        &localTime,
+        &mpiTime,
+        1,
+        MPI_DOUBLE,
+        MPI_MAX,
+        0,
+        MPI_COMM_WORLD
+    );
+    if (rank == 0) {
+        runTests();
+        auto seq = sequentialSpMV(values, col_indices, row_ptr, x);
+        omp_set_num_threads(4);
+        auto ompResult = parallelSpMV(values, col_indices, row_ptr, x);
+        bool mpiCorrect = (seq == globalResult);
+        bool ompCorrect = (seq == ompResult);
+        cout << "Processes: " << size << endl;
+        cout << "MPI time: " << mpiTime << " s" << endl;
+        cout << "Sequential vs OpenMP: "
+            << (ompCorrect ? "YES" : "NO") << endl;
+        vector<int> threadCounts = { 1, 2, 4, 8 };
+        const int repeats = 5;
+        vector<double> seqTimes;
+        for (int r = 0; r < repeats; r++) {
+            double start = omp_get_wtime();
+            auto result = sequentialSpMV(values, col_indices, row_ptr, x);
+            seqTimes.push_back(omp_get_wtime() - start);
+            if (result != seq) return 1;
+        }
+        sort(seqTimes.begin(), seqTimes.end());
+        double seqMedian = seqTimes[repeats / 2];
+        ofstream csv("openmp_final.csv");
+        csv << "threads,time,speedup,efficiency,correct\n";
+        cout << "\nSequential median: " << seqMedian << endl;
+        omp_set_dynamic(0);
+        for (int threads : threadCounts) {
+            omp_set_num_threads(threads);
+            vector<double> times;
+            bool correct = true;
+            auto warmup = parallelSpMV(values, col_indices, row_ptr, x);
+            for (int r = 0; r < repeats; r++) {
+                double start = omp_get_wtime();
+                auto result = parallelSpMV(values, col_indices, row_ptr, x);
+                times.push_back(omp_get_wtime() - start);
+                if (result != seq) correct = false;
+            }
+            sort(times.begin(), times.end());
+            double median = times[repeats / 2];
+            double speedup = seqMedian / median;
+            double efficiency = speedup / threads * 100.0;
+            cout << "Threads: " << threads
+                << " | Time: " << median
+                << " | Speedup: " << speedup
+                << " | Correct: " << (correct ? "YES" : "NO")
+                << endl;
+            csv << threads << "," << median << ","
+                << speedup << "," << efficiency << ","
+                << (correct ? "YES" : "NO") << "\n";
+        }
+        csv.close();
+        cout << "OpenMP benchmark saved!\n";
+        cout << "Sequential vs MPI: "
+            << (mpiCorrect ? "YES" : "NO") << endl;
+    }
+    MPI_Finalize();
+    return 0;
+}
+
+
+
