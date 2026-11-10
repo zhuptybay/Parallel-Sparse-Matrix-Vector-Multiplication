@@ -1,4 +1,4 @@
-﻿#include <cmath>
+#include <cmath>
 #include <omp.h>
 #include <iostream>
 #include <vector>
@@ -117,6 +117,8 @@ int main() {
     vector<double> localValues;
     vector<int> localCols;
     vector<int> localRowPtr(localRows + 1);
+    MPI_Barrier(MPI_COMM_WORLD);
+    double distributionStart = MPI_Wtime();
     if (rank == 0) {
         for (int p = 0; p < size; p++) {
             int begin = p * N / size;
@@ -163,8 +165,19 @@ int main() {
         MPI_Recv(localCols.data(), count, MPI_INT,
             0, 3, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     }
+    MPI_Barrier(MPI_COMM_WORLD);
+    double distributionTime =
+        MPI_Wtime() - distributionStart;
+    double computeStart = MPI_Wtime();
     vector<double> localResult =
         sequentialSpMV(localValues, localCols, localRowPtr, x);
+    double computeTime = MPI_Wtime() - computeStart;
+    double maxDistribution = 0.0;
+    double maxCompute = 0.0;
+    MPI_Reduce(&distributionTime, &maxDistribution,
+        1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&computeTime, &maxCompute,
+        1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
     vector<int> counts(size), displs(size);
     for (int p = 0; p < size; p++) {
         int begin = p * N / size;
@@ -200,10 +213,24 @@ int main() {
         bool ompCorrect = (seq == ompResult);
         cout << "Processes: " << size << endl;
         cout << "MPI time: " << mpiTime << " s" << endl;
+        cout << "Distribution time: "
+            << maxDistribution << " s\n";
+        cout << "Computation time: "
+            << maxCompute << " s\n";
         cout << "Sequential vs OpenMP: "
             << (ompCorrect ? "YES" : "NO") << endl;
         vector<int> threadCounts = { 1, 2, 4, 8 };
         const int repeats = 5;
+        omp_set_dynamic(0);
+        omp_set_num_threads(1);
+        for (int k = 0; k < 5; k++) {
+            auto warmSeq = sequentialSpMV(values, col_indices, row_ptr, x);
+            auto warmOmp = parallelSpMV(values, col_indices, row_ptr, x);
+            if (warmSeq != warmOmp) {
+                cout << "Warm-up correctness: FAIL\n";
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+        }
         vector<double> seqTimes;
         for (int r = 0; r < repeats; r++) {
             double start = omp_get_wtime();
@@ -217,6 +244,7 @@ int main() {
         csv << "threads,time,speedup,efficiency,correct\n";
         cout << "\nSequential median: " << seqMedian << endl;
         omp_set_dynamic(0);
+        double ompBaseline = 0.0;
         for (int threads : threadCounts) {
             omp_set_num_threads(threads);
             vector<double> times;
@@ -230,7 +258,10 @@ int main() {
             }
             sort(times.begin(), times.end());
             double median = times[repeats / 2];
-            double speedup = seqMedian / median;
+            if (threads == 1) {
+                ompBaseline = median;
+            }
+            double speedup = ompBaseline / median;
             double efficiency = speedup / threads * 100.0;
             cout << "Threads: " << threads
                 << " | Time: " << median
