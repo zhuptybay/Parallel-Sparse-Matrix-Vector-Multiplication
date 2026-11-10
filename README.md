@@ -113,6 +113,14 @@ Speedup is measured relative to OpenMP with one thread.
 | 4 | 0.007927 | 2.40x | 59.92% |
 | 8 | 0.005864 | 3.24x | 40.50% |
 
+
+#### OpenMP Performance Graphs
+
+![OpenMP Speedup](results/speedup%20vs%20number%20of%20threads.png)
+
+![OpenMP Efficiency](results/OpenMP%20Efficiency%20VS%20Number%20of%20Threads.png)
+
+
 OpenMP scales to 3.24x on eight threads relative to its single-thread execution.
 
 The separate sequential implementation showed different timings, which require further controlled investigation.
@@ -127,6 +135,14 @@ MPI uses collective communication with MPI_Scatterv and MPI_Gatherv.
 | 2 | 0.125514 | 1.014x | 50.72% |
 | 4 | 0.117389 | 1.085x | 27.12% |
 | 8 | 0.126942 | 1.003x | 12.54% |
+
+
+#### MPI Performance Graphs
+
+![MPI Speedup](results/mpi_speedup_scatterv.png)
+
+![MPI Efficiency](results/mpi_efficiency_scatterv.png)
+
 
 MPI speedup is calculated relative to its one-process execution.
 
