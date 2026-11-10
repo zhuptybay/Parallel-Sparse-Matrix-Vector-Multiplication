@@ -20,9 +20,7 @@ The objective is to evaluate correctness, execution time, speedup, efficiency, a
 
 Sparse Matrix-Vector Multiplication computes:
 
-\[
-y=Ax
-\]
+\[y=Ax\]
 
 where \(A\) is a sparse matrix, \(x\) is an input vector, and \(y\) is the resulting vector.
 
@@ -53,6 +51,8 @@ OpenMP parallelizes the outer loop using:
 Different threads process independent rows, writing their results to separate output positions.
 
 ### MPI SpMV
+
+CSR blocks are distributed using MPI_Scatterv, while MPI_Gatherv collects the resulting vector.
 
 The MPI implementation uses row-based data distribution.
 
@@ -90,45 +90,55 @@ The generator uses deterministic nonzero values and includes empty rows.
 
 Benchmark results were collected on a Windows machine using repeated measurements. OpenMP timings use the median of five runs, while MPI timings use the median of five separate executions.
 
+
 ## 5. Performance Results
 
-### OpenMP
+### Experimental Setup
 
-Sequential median: **0.033855 seconds**
+- Matrix size: 100,000 × 100,000
+- Storage: CSR
+- Up to 100 nonzero elements per nonempty row
+- Every 10th row is empty
+- Compiler: MSVC Release x64
+- Repeated measurements using median execution time
 
-| Threads | Speedup | Efficiency |
-|---|---:|---:|
-| 1 | 1.263× | 126.32% |
-| 2 | 0.966× | 48.31% |
-| 4 | 1.189× | 29.72% |
-| 8 | 1.153× | 14.41% |
+### OpenMP Scalability
 
-### MPI
+Speedup is measured relative to OpenMP with one thread.
 
-Speedup is calculated relative to the one-process MPI execution.
-
-| Processes | Median Time (s) | Speedup | Efficiency |
+| Threads | Time (s) | Speedup | Efficiency |
 |---|---:|---:|---:|
-| 1 | 0.073154 | 1.000× | 100.00% |
-| 2 | 0.087654 | 0.835× | 41.73% |
-| 4 | 0.078128 | 0.936× | 23.41% |
-| 8 | 0.080088 | 0.913× | 11.42% |
+| 1 | 0.019000 | 1.00x | 100.00% |
+| 2 | 0.010085 | 1.88x | 94.20% |
+| 4 | 0.007927 | 2.40x | 59.92% |
+| 8 | 0.005864 | 3.24x | 40.50% |
 
-### Analysis
+OpenMP scales to 3.24x on eight threads relative to its single-thread execution.
 
-Both implementations produced correct results, but parallel execution did not consistently outperform the sequential algorithm.
+The separate sequential implementation showed different timings, which require further controlled investigation.
 
-Possible contributing factors include:
+### MPI Scalability
 
-- Memory-bandwidth limitations.
-- Thread-management overhead.
-- MPI communication and data-distribution costs.
-- Small computation time relative to parallelization overhead.
-- Variation in benchmark conditions.
+MPI uses collective communication with MPI_Scatterv and MPI_Gatherv.
 
-These results demonstrate that increasing the number of threads or processes does not automatically improve performance.
+| Processes | Time (s) | Speedup | Efficiency |
+|---|---:|---:|---:|
+| 1 | 0.127326 | 1.000x | 100.00% |
+| 2 | 0.125514 | 1.014x | 50.72% |
+| 4 | 0.117389 | 1.085x | 27.12% |
+| 8 | 0.126942 | 1.003x | 12.54% |
 
-The measured data also suggests the need for further controlled experiments before drawing definitive conclusions about scalability.
+MPI speedup is calculated relative to its one-process execution.
+
+### Performance Analysis
+
+OpenMP demonstrates useful thread-level scalability.
+
+MPI shows limited end-to-end acceleration because data distribution and communication introduce substantial overhead.
+
+The MPI_Scatterv implementation distributes CSR blocks collectively, but additional controlled comparisons are needed to quantify its improvement over MPI_Send.
+
+Increasing the number of threads or processes does not guarantee proportional acceleration.
 
 ## 6. Correctness Testing
 
