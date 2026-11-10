@@ -119,51 +119,50 @@ int main() {
     vector<int> localRowPtr(localRows + 1);
     MPI_Barrier(MPI_COMM_WORLD);
     double distributionStart = MPI_Wtime();
+    vector<int> nnzCounts(size, 0);
+    vector<int> nnzDispls(size, 0);
+    vector<int> ptrCounts(size, 0);
+    vector<int> ptrDispls(size, 0);
     if (rank == 0) {
         for (int p = 0; p < size; p++) {
             int begin = p * N / size;
             int end = (p + 1) * N / size;
-            int first = row_ptr[begin];
-            int last = row_ptr[end];
-            int count = last - first;
-            vector<int> ptr(end - begin + 1);
-            for (int i = 0; i <= end - begin; i++) {
-                ptr[i] = row_ptr[begin + i] - first;
-            }
-            if (p == 0) {
-                localRowPtr = ptr;
-                localValues.assign(
-                    values.begin() + first,
-                    values.begin() + last
-                );
-                localCols.assign(
-                    col_indices.begin() + first,
-                    col_indices.begin() + last
-                );
-            }
-            else {
-                MPI_Send(&count, 1, MPI_INT, p, 0, MPI_COMM_WORLD);
-                MPI_Send(ptr.data(), static_cast<int>(ptr.size()),
-                    MPI_INT, p, 1, MPI_COMM_WORLD);
-                MPI_Send(values.data() + first, count,
-                    MPI_DOUBLE, p, 2, MPI_COMM_WORLD);
-                MPI_Send(col_indices.data() + first, count,
-                    MPI_INT, p, 3, MPI_COMM_WORLD);
-            }
+            nnzCounts[p] = row_ptr[end] - row_ptr[begin];
+            nnzDispls[p] = row_ptr[begin];
+            ptrCounts[p] = end - begin + 1;
+            ptrDispls[p] = begin;
         }
     }
-    else {
-        int count;
-        MPI_Recv(&count, 1, MPI_INT, 0, 0,
-            MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Recv(localRowPtr.data(), localRows + 1,
-            MPI_INT, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        localValues.resize(count);
-        localCols.resize(count);
-        MPI_Recv(localValues.data(), count, MPI_DOUBLE,
-            0, 2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Recv(localCols.data(), count, MPI_INT,
-            0, 3, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    int localNnz = 0;
+    MPI_Scatter(
+        rank == 0 ? nnzCounts.data() : nullptr,
+        1, MPI_INT,
+        &localNnz, 1, MPI_INT,
+        0, MPI_COMM_WORLD
+    );
+    localValues.resize(localNnz);
+    localCols.resize(localNnz);
+    MPI_Scatterv(
+        rank == 0 ? values.data() : nullptr,
+        nnzCounts.data(), nnzDispls.data(), MPI_DOUBLE,
+        localValues.data(), localNnz, MPI_DOUBLE,
+        0, MPI_COMM_WORLD
+    );
+    MPI_Scatterv(
+        rank == 0 ? col_indices.data() : nullptr,
+        nnzCounts.data(), nnzDispls.data(), MPI_INT,
+        localCols.data(), localNnz, MPI_INT,
+        0, MPI_COMM_WORLD
+    );
+    MPI_Scatterv(
+        rank == 0 ? row_ptr.data() : nullptr,
+        ptrCounts.data(), ptrDispls.data(), MPI_INT,
+        localRowPtr.data(), localRows + 1, MPI_INT,
+        0, MPI_COMM_WORLD
+    );
+    int offset = localRowPtr[0];
+    for (int& ptr : localRowPtr) {
+        ptr -= offset;
     }
     MPI_Barrier(MPI_COMM_WORLD);
     double distributionTime =
